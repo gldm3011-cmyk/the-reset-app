@@ -269,15 +269,22 @@ def resumen_admin(con):
 
 
 def crear_cuentas_demo(con, clave="Demo12345"):
-    """Solo para la demostración local (THE_RESET_DEMO=1): da acceso a los usuarios y profesionales de ejemplo."""
-    for u in db.listar_usuarios(con):
-        correo = u["correo_demo"] or f"usuario{u['id']}@demo.thereset"
+    """Solo para la demostración (THE_RESET_DEMO=1): da acceso a los pacientes y profesionales de ejemplo.
+    Nunca toca cuentas reales: solo usuarios marcados como demo y profesionales sin correo propio (los del archivo seed)."""
+    for u in db.rows(con.execute("SELECT * FROM usuarios WHERE es_demo=1 ORDER BY id")):
+        correo = (u["correo_demo"] or f"usuario{u['id']}@demo.thereset").lower()
         if not cuenta_por_correo(con, correo):
             con.execute("INSERT INTO cuentas (correo, clave_hash, rol, usuario_id, consentimiento_fecha, politica_version, creado) VALUES (?,?,?,?,?,?,?)",
-                        (correo.lower(), hash_clave(clave), "paciente", u["id"], db.now(), POLITICA_VERSION, db.now()))
-    for p in db.listar_profesionales(con, estado=None):
-        correo = f"profesional{p['id']}@demo.thereset"
-        if not cuenta_por_correo(con, correo):
-            con.execute("INSERT INTO cuentas (correo, clave_hash, rol, profesional_id, consentimiento_fecha, politica_version, creado) VALUES (?,?,?,?,?,?,?)",
-                        (correo, hash_clave(clave), "profesional", p["id"], db.now(), POLITICA_VERSION, db.now()))
+                        (correo, hash_clave(clave), "paciente", u["id"], db.now(), POLITICA_VERSION, db.now()))
+    demo_prof = db.rows(con.execute(
+        "SELECT p.id FROM profesionales p WHERE p.correo IS NULL AND p.registro_profesional IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM cuentas c WHERE c.profesional_id=p.id) ORDER BY p.id"))
+    usados = {c["correo"] for c in db.rows(con.execute("SELECT correo FROM cuentas WHERE correo LIKE 'profesional%@demo.thereset'"))}
+    n = 1
+    for p in demo_prof:
+        while f"profesional{n}@demo.thereset" in usados:
+            n += 1
+        correo = f"profesional{n}@demo.thereset"; usados.add(correo)
+        con.execute("INSERT INTO cuentas (correo, clave_hash, rol, profesional_id, consentimiento_fecha, politica_version, creado) VALUES (?,?,?,?,?,?,?)",
+                    (correo, hash_clave(clave), "profesional", p["id"], db.now(), POLITICA_VERSION, db.now()))
     con.commit()

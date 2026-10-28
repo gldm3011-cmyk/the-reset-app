@@ -30,8 +30,8 @@ def proximo_dia(prof, desde: date, salto=0):
 
 
 def poblar(con) -> bool:
-    """Carga datos demo solo si la base está vacía. Devuelve True si cargó datos."""
-    if con.execute("SELECT COUNT(*) FROM profesionales").fetchone()[0] > 0:
+    """Carga los datos de ejemplo si aún no existen (aunque ya haya cuentas reales). Devuelve True si cargó datos."""
+    if con.execute("SELECT COUNT(*) FROM usuarios WHERE es_demo=1").fetchone()[0] > 0:
         return False
     pids = [db.crear_profesional(con, *p) for p in PROFESIONALES]
     hoy = date.today()
@@ -69,10 +69,8 @@ def poblar(con) -> bool:
 
 def poblar_planes(con) -> bool:
     """Inscripciones de demostración. También se ejecuta sobre bases creadas con la versión anterior (migración)."""
-    if con.execute("SELECT COUNT(*) FROM inscripciones").fetchone()[0] > 0:
-        return False
     demo = con.execute("SELECT id FROM usuarios WHERE es_demo=1 ORDER BY id LIMIT 1").fetchone()
-    if not demo:
+    if not demo or con.execute("SELECT COUNT(*) FROM inscripciones WHERE usuario_id=?", (demo[0],)).fetchone()[0] > 0:
         return False
     uid, hoy = demo[0], date.today()
     r = planes.inscribir(con, uid, "ruta_tirzepatida", hoy - timedelta(days=9),
