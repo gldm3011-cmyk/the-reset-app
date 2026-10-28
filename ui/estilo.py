@@ -39,8 +39,8 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 22px !importan
 
 /* Botones */
 .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {{ border-radius: 999px !important; min-height: 2.65rem; font-weight: 600; border: 1px solid #D9DED3; background: {WHITE}; color: {INK}; }}
-.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] {{ background: {DARK} !important; border-color: {DARK} !important; color: #fff !important; }}
-.stButton > button[kind="primary"] p, .stFormSubmitButton > button[kind="primary"] p {{ color: #fff !important; }}
+.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"], .stFormSubmitButton > button[kind="primaryFormSubmit"] {{ background: {DARK} !important; border-color: {DARK} !important; color: #fff !important; }}
+.stButton > button[kind="primary"] p, .stFormSubmitButton > button[kind="primary"] p, .stFormSubmitButton > button[kind="primaryFormSubmit"] p {{ color: #fff !important; }}
 .stButton > button:hover {{ border-color: {MID}; color: {MID}; }}
 .stButton > button[kind="primary"]:hover {{ background: {MID} !important; border-color: {MID} !important; }}
 
@@ -197,8 +197,8 @@ def card(inner, cls=""):
 
 
 def banner():
-    st.markdown('<div class="tr-banner">🎓 <b>Prototipo académico.</b> No es un servicio médico, no prescribe medicamentos ni dosis. '
-                'Usuarios y profesionales ficticios: <b>no ingrese datos médicos reales</b>.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tr-banner">🩺 The Reset no reemplaza a su profesional de salud ni prescribe medicamentos o dosis. '
+                'Ante una emergencia llame al <b>123</b>.</div>', unsafe_allow_html=True)
 
 
 CAT_ICON = {"Educación": "📘", "Control": "🩺", "Registro": "📝", "Seguimiento": "📈", "Nutrición": "🥗", "Actividad": "👟"}

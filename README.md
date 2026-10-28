@@ -1,126 +1,112 @@
-# The Reset — Prototipo funcional (versión 2, mobile-first)
+# The Reset — versión 3 (lista para operar)
 
-Prototipo académico de **The Reset**: plataforma de acompañamiento para personas adultas que usan o consideran medicamentos GLP-1 (por ejemplo, Mounjaro/tirzepatida) **bajo supervisión médica**.
+Plataforma de acompañamiento para personas adultas que usan o consideran medicamentos GLP-1 (por ejemplo, Mounjaro/tirzepatida) **bajo supervisión médica**.
+The Reset **no prescribe** medicamentos, dosis, frecuencias, dietas ni rutinas, y no reemplaza la atención médica.
 
-> ⚠️ **No es un servicio médico.** No prescribe medicamentos, dosis, frecuencias, dietas ni rutinas, y no sustituye a los profesionales de salud. Todos los usuarios y profesionales son **ficticios**: no ingrese datos médicos reales. Registrar un evento en la app **no equivale a una notificación oficial de farmacovigilancia**.
+## Qué cambió frente al prototipo
 
-## Novedades de la versión 2
+| Prototipo (v2) | Versión 3 |
+|---|---|
+| Usuarios y profesionales ficticios, selector de usuario | **Cuentas reales con correo y contraseña** para pacientes, profesionales y administración |
+| Base SQLite que se borraba al reiniciar la nube | **PostgreSQL** (Supabase u otro) con `DATABASE_URL`; SQLite solo para pruebas locales |
+| Directorio con perfiles inventados | Los profesionales **se registran** y aparecen solo cuando el administrador **verifica su registro** |
+| Aviso de «no ingrese datos reales» | **Autorización de tratamiento de datos** (Ley 1581 de 2012), política y términos, descarga de datos y eliminación de la cuenta |
+| Sin panel profesional | **Agenda del profesional**: enlace de videollamada, marcar cita como atendida, ver registros de sus pacientes (si el paciente lo permite) |
+| Panel de análisis abierto | **Administración**: verificación de profesionales, cuentas, contraseñas temporales, indicador central y auditoría |
 
-- **Interfaz tipo aplicación móvil:**
-  - barra de navegación inferior (Inicio, Mis planes, Citas, Seguimiento, Perfil) y botón **Más** para Profesionales, Eventos adversos, Panel y Acerca;
-  - tarjetas redondeadas, anillos de progreso, calendario semanal y paleta verde salvia, verde oscuro, blanco y crema;
-  - diseño adaptable a celular y computador.
-- **Mis planes:**
-  - Explorar el catálogo y entrar a la ficha de cada programa.
-  - Rutas por medicamento:
-    - **Mounjaro · tirzepatida**
-    - **Ozempic / Wegovy · semaglutida**
-    - **Saxenda / Victoza · liraglutida**
-    - **Acompañamiento general**
-  - Programas de **nutrición**, **actividad física** y **seguimiento clínico**, de 4 semanas cada uno.
-  - Inscripción con objetivos y preferencias, calendario de 4 semanas y actividades que se marcan como realizadas.
-  - Observaciones por actividad y por semana, registros de comidas, hábitos y actividad, y progreso semanal y total.
-  - Pausar y reanudar: al reanudar, las actividades pendientes se corren los días que duró la pausa. También se puede finalizar.
-  - Sin inscripciones duplicadas.
-- **Inicio renovado:** muestra el plan activo con su avance, el medicamento declarado, la próxima cita, los pendientes de la semana, accesos rápidos y un resumen de seguimiento.
-- **Recarga sin perder el lugar:** la URL guarda el usuario y la sección (`?u=…&p=…&i=…`). Al recargar el navegador se vuelve al mismo plan.
+## Roles
 
-### Rutas por medicamento: qué hacen y qué no
+- **Paciente** (18 años o más): crea su cuenta, elige ruta por medicamento y programas de 4 semanas, agenda citas, registra seguimiento y eventos adversos
+  con indicador de completitud, controla si comparte sus registros, descarga sus datos o elimina su cuenta.
+- **Profesional**: se registra con su número ReTHUS o tarjeta profesional; queda **en revisión** hasta que el administrador lo aprueba. Luego ve su agenda,
+  agrega el enlace de la consulta virtual, marca citas atendidas y consulta el seguimiento de sus pacientes.
+- **Administrador**: se crea automáticamente con `ADMIN_EMAIL` y `ADMIN_PASSWORD`. Aprueba, rechaza o suspende profesionales; activa o desactiva cuentas;
+  genera contraseñas temporales; ve el indicador central (reportes con edad, sexo, peso y desenlace) y la auditoría de accesos.
 
-Cada ruta presenta información **educativa** del medicamento:
-- distingue **marca**, **principio activo** e **indicaciones autorizadas**, que cambian según la marca, el país y la agencia (por ejemplo, Mounjaro y Zepbound son la misma molécula con indicaciones distintas en EE. UU.);
-- recomienda verificar el registro sanitario vigente del INVIMA en Colombia;
-- organiza controles con el especialista, el registro de síntomas y posibles efectos adversos, la evolución y bienestar, y el seguimiento nutricional y físico con profesionales;
-- incluye **señales de alarma** para buscar atención médica, sin diagnosticar.
+## Seguridad incluida
 
-**Ninguna ruta** indica dosis, frecuencias de administración, ajustes de medicación ni decisiones clínicas. Una prueba automática revisa que ninguna actividad del catálogo contenga cantidades de medicamento ni calorías. La ruta «sugerida» depende solo del medicamento que el usuario **declara** en su perfil y no es una recomendación clínica.
+- Contraseñas con PBKDF2-SHA256 (310.000 iteraciones y sal aleatoria); mínimo 8 caracteres con letras y números.
+- Bloqueo de 15 minutos tras 5 intentos fallidos; mensajes de error que no revelan si un correo existe.
+- Cierre de sesión por inactividad (30 minutos, configurable con `SESION_MINUTOS`).
+- Control de acceso por rol: un profesional solo ve pacientes que agendaron con él y que comparten sus registros.
+- Auditoría de inicios de sesión, cambios de contraseña, aprobaciones y consultas a datos de pacientes.
+- En PostgreSQL se activa *Row Level Security* en todas las tablas, para que la API pública de Supabase no pueda leerlas.
+- Enlaces de videollamada solo con `https://`; todo el texto de usuarios se escapa antes de mostrarse.
 
-## Funciones que se conservan
+## Puesta en marcha en la nube (gratis para empezar)
 
-Registro y perfil · directorio de profesionales · citas (agendar, reprogramar, cancelar, sin reservas duplicadas) · seguimiento de salud (peso opcional, síntomas, energía, edición) · **eventos adversos** con indicador de completitud, borradores, actualización del desenlace e historial · panel de análisis con los datos históricos (54.170 reportes) **separados** de los datos ficticios · persistencia en SQLite.
+### 1. Base de datos en Supabase
+1. Cree un proyecto en <https://supabase.com> y anote la contraseña de la base.
+2. Vaya a **Project Settings → Database → Connection string** y copie la de **Transaction pooler** (puerto 6543).
+3. Reemplace `[YOUR-PASSWORD]` por su contraseña y agregue `?sslmode=require` al final. Si la contraseña tiene símbolos como `@` o `#`, escríbalos codificados (`%40`, `%23`).
+
+La app crea todas las tablas sola la primera vez que arranca.
+
+### 2. Código en GitHub
+Suba el contenido de esta carpeta a su repositorio (por ejemplo `gldm3011-cmyk/the-reset-app`), reemplazando la versión anterior.
+El `.gitignore` evita subir la base local y el archivo de secretos.
+
+### 3. Despliegue en Streamlit Community Cloud
+1. En <https://share.streamlit.io> abra su app (o **Create app** → repositorio → `app.py`).
+2. En **Settings → Secrets** pegue el contenido de `.streamlit/secrets.example.toml` con sus valores reales:
+   `DATABASE_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `RESPONSABLE_NOMBRE`, `RESPONSABLE_NIT`, `RESPONSABLE_CORREO`, `RESPONSABLE_CIUDAD`.
+3. Guarde y reinicie la app (**Reboot**). Ingrese con el correo y la contraseña de administrador.
+
+### 4. Primer día de operación
+1. Ingrese como administrador y cambie la contraseña en **Mi cuenta**.
+2. Pida a los profesionales que se registren en **Soy profesional**; verifique cada registro en ReTHUS y apruébelos en **Verificar**.
+3. Comparta el enlace de la app con los pacientes.
+
+## Ejecutar en su computador
+
+```bash
+pip install -r requirements.txt
+# Windows (PowerShell): $env:ADMIN_EMAIL="admin@prueba.co"; $env:ADMIN_PASSWORD="Admin2027x"
+export ADMIN_EMAIL=admin@prueba.co ADMIN_PASSWORD=Admin2027x
+streamlit run app.py
+```
+
+Sin `DATABASE_URL` usa `data/the_reset.db` (SQLite).
+Para una **demostración con datos de ejemplo** agregue `THE_RESET_DEMO=1`: se cargan profesionales y pacientes ficticios con la contraseña `Demo12345`
+(por ejemplo `ana.demo@ejemplo.com` o `profesional1@demo.thereset`). **No use ese modo en producción.**
+
+## Pruebas
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q                                   # 67 pruebas en SQLite
+TEST_DATABASE_URL=postgresql://... python -m pytest -q  # + flujo completo en PostgreSQL (base desechable: se borra)
+```
+
+Cubren cuentas, contraseñas, bloqueo, roles, verificación de profesionales, citas, enlaces, privacidad, exportación y eliminación de datos,
+planes, eventos adversos y todas las pantallas por rol (Streamlit 1.40.2 y 1.66.1).
+
+## Antes de abrir al público (pendientes que no son de código)
+
+- **Revisión legal** de la política de tratamiento de datos y los términos (`ui/legal.py`) por un abogado. Son plantillas basadas en la Ley 1581 de 2012.
+- **Registro Nacional de Bases de Datos** ante la SIC, si su empresa está obligada.
+- **Copias de seguridad**: el plan gratuito de Supabase no incluye copias automáticas diarias; actívelas en un plan pago o programe exportaciones.
+- **Telesalud**: si los profesionales atienden por video, cada uno debe cumplir la Resolución 2654 de 2019; The Reset solo guarda el enlace.
+
+## Limitaciones conocidas
+
+- **Recuperación de contraseña** por correo: no se envían correos; el administrador genera una contraseña temporal desde **Cuentas**.
+- **Pagos** (suscripción premium, comisiones): no están integrados; requieren una pasarela certificada y un contrato comercial.
+- **Videollamada**: se usa un enlace externo (Meet, Zoom, Teams) que agrega el profesional.
+- **Recargar la página** cierra la sesión (Streamlit no guarda sesiones entre recargas); basta con volver a ingresar.
 
 ## Estructura
 
 ```
-the_reset_app/
-├── app.py                 Arranque, encabezado, enrutador y barra inferior
-├── core/
-│   ├── db.py              SQLite: esquema (con migración), validaciones, usuarios, citas, seguimiento, eventos, indicadores
-│   ├── programas.py       Catálogo de rutas y programas (contenido educativo, sin dosis)
-│   ├── planes.py          Inscripciones, calendario, avance, pausas, observaciones y registros
-│   └── seed.py            Datos ficticios de demostración
-├── ui/
-│   ├── estilo.py          CSS mobile-first y componentes (anillos, calendario, tarjetas)
-│   ├── nav.py             Navegación y mensajes
-│   ├── vistas_planes.py   Explorar, ficha, inscripción y plan activo
-│   └── vistas.py          Inicio, Citas, Seguimiento, Perfil, Más, Profesionales, Eventos, Panel
-├── data/historico_resumen.csv     Resumen agregado de las bases limpias del proyecto
-├── tests/                 54 pruebas automatizadas
-├── tools/generar_resumen_historico.py
-├── ejecutar_en_colab.ipynb
-├── requirements.txt / requirements-dev.txt
-└── .streamlit/config.toml
+app.py                  Arranque, sesión, enrutamiento por rol y barra inferior
+core/conexion.py        SQLite o PostgreSQL con la misma interfaz
+core/db.py              Esquema, migraciones, citas, seguimiento, eventos, exportación y supresión
+core/auth.py            Cuentas, contraseñas, bloqueo, roles, administración y auditoría
+core/planes.py          Programas de 4 semanas: inscripción, calendario, pausas y registros
+core/programas.py       Catálogo educativo de rutas y programas (sin dosis)
+core/seed.py            Datos de ejemplo (solo con THE_RESET_DEMO=1)
+ui/acceso.py            Inicio de sesión, registro, cambio de contraseña
+ui/legal.py             Política de datos y términos de uso
+ui/vistas.py            Paciente · ui/vistas_planes.py Planes · ui/vistas_pro.py Profesional · ui/vistas_admin.py Administración
+tests/                  Pruebas automatizadas
 ```
-
-**Migración:** si ya tenía `data/the_reset_demo.db` de la versión 1, la app conserva sus usuarios, citas, seguimientos y reportes, y le agrega las tablas de planes (`inscripciones`, `plan_actividades`, `plan_notas` y `plan_registros`). Para empezar de cero use **Más → Restablecer la demostración** o borre ese archivo.
-
-## 1. Ejecutar en su computador (recomendado para la presentación)
-
-Requisitos: Python 3.10 o superior.
-
-```bash
-cd the_reset_app
-python -m venv .venv
-# Windows: .venv\Scripts\activate      macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Se abre en `http://localhost:8501`. Para ver la versión móvil en el computador, abra las herramientas de desarrollo del navegador (F12) y active el modo de dispositivo (Ctrl+Shift+M), o abra el enlace desde su celular.
-
-## 2. Ejecutar en Google Colab
-
-Abra `ejecutar_en_colab.ipynb` en Colab y ejecute las celdas en orden. El cuaderno:
-1. sube y descomprime el ZIP;
-2. instala las dependencias;
-3. ejecuta las pruebas (opcional);
-4. inicia la app;
-5. crea un enlace público temporal con Cloudflare Tunnel (`https://….trycloudflare.com`).
-
-El enlace dura mientras la sesión de Colab esté activa.
-
-## 3. Publicar con un enlace permanente (Streamlit Community Cloud, gratuito)
-
-1. Suba el contenido de `the_reset_app/` a un repositorio **público** de GitHub. El `.gitignore` excluye la base local.
-2. Entre a <https://share.streamlit.io> → **Create app** → elija el repositorio, la rama y el archivo `app.py` → **Deploy**.
-3. Comparta el enlace `https://<nombre>.streamlit.app`. Se ve bien desde el celular del profesor.
-
-En la nube, la base SQLite vive en el servidor de la app: los datos se conservan mientras la app esté activa y vuelven a los datos de demostración si la plataforma la reinicia.
-
-## 4. Pruebas automatizadas
-
-```bash
-pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-Las 54 pruebas pasan con Streamlit 1.40.2 y con 1.66.1:
-- **Planes:**
-  - catálogo completo de 4 semanas y sin dosis;
-  - marcas y principios activos distinguidos;
-  - ruta sugerida por medicamento;
-  - inscripción, calendario y validaciones;
-  - no duplicar inscripciones;
-  - avance, observaciones y notas;
-  - semana actual;
-  - pausar y reanudar con corrimiento de fechas;
-  - registros del programa;
-  - persistencia y migración desde la versión 1.
-- **Funciones existentes:** registro, citas, seguimiento, eventos adversos e indicadores.
-- **Interfaz (`streamlit.testing`):**
-  - todas las secciones y la barra inferior;
-  - registro, rechazo de menores de edad y cambio de usuario;
-  - flujo completo de la ruta Mounjaro (explorar → ficha → inscribirse → marcar → pausar → reanudar);
-  - registros y observaciones del plan de nutrición;
-  - citas, directorio, eventos y pendientes desde el inicio;
-  - recuperación del plan desde la URL.

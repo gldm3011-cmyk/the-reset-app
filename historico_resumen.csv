@@ -1,9 +1,0 @@
-medicamento,reportes,pct_incompletos,pct_sin_peso,pct_sin_edad,pct_sin_desenlace,pct_graves,pct_graves_sin_desenlace,pct_error_uso_sin_desenlace
-albiglutide,4982.0,98.88,96.71,54.8,80.41,6.4,53.29,88.35
-dulaglutide,4994.0,95.81,91.97,60.09,54.29,21.09,39.51,66.49
-exenatide,9236.0,79.96,53.98,44.81,57.1,31.18,42.36,60.1
-liraglutide,9978.0,86.8,77.87,40.25,40.55,43.98,41.07,28.65
-lixisenatide,19.0,100.0,94.74,73.68,84.21,15.79,66.67,100.0
-semaglutide,14992.0,89.18,81.36,45.64,38.14,41.38,35.65,31.61
-tirzepatide,9969.0,98.89,96.51,24.5,70.43,6.57,51.6,79.2
-TOTAL,54170.0,90.46,81.23,42.8,53.15,28.62,39.74,65.82

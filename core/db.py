@@ -1,17 +1,20 @@
-"""Capa de datos de The Reset (prototipo académico).
+"""Capa de datos de The Reset.
 
-SQLite local: un solo archivo, sin servidor, persistente entre ejecuciones y suficiente para una demostración.
+Funciona con SQLite (desarrollo local) o PostgreSQL (producción, vía DATABASE_URL); ver core/conexion.py.
 Todas las funciones validan sus entradas y lanzan ValidationError con un mensaje en español si algo no es válido.
 """
 from __future__ import annotations
 
+import json
 import os
-import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-DEFAULT_DB = Path(os.environ.get("THE_RESET_DB", Path(__file__).resolve().parent.parent / "data" / "the_reset_demo.db"))
+from .conexion import IntegrityError, abrir, config
+
+DEFAULT_DB = Path(os.environ.get("THE_RESET_DB", Path(__file__).resolve().parent.parent / "data" / "the_reset.db"))
+ESTADOS_PROF = ["pendiente", "aprobado", "rechazado", "suspendido"]
 
 ESPECIALIDADES = ["Endocrinología", "Nutrición", "Medicina deportiva", "Medicina general"]
 SEXOS = ["Femenino", "Masculino", "Otro", "Prefiero no decir"]
@@ -39,25 +42,18 @@ class ValidationError(ValueError):
 
 
 # ------------------------------------------------------------------ conexión y esquema
-def connect(path: str | Path | None = None) -> sqlite3.Connection:
-    p = Path(path) if path else DEFAULT_DB
-    if str(p) != ":memory:":
-        p.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(p), check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    init_schema(con)
+def connect(path: str | Path | None = None, init: bool = True):
+    """Abre la base (PostgreSQL si hay DATABASE_URL; si no, SQLite) y, por defecto, crea o migra el esquema."""
+    con = abrir(path or (None if config("DATABASE_URL") else os.environ.get("THE_RESET_DB", DEFAULT_DB)))
+    if init:
+        init_schema(con)
     return con
 
 
 @contextmanager
-def tx(con: sqlite3.Connection):
-    try:
+def tx(con):
+    with con.transaccion():
         yield con
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
 
 
 SCHEMA = """
@@ -180,6 +176,29 @@ CREATE TABLE IF NOT EXISTS plan_notas (
     fecha TEXT NOT NULL,
     texto TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cuentas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correo TEXT NOT NULL UNIQUE,
+    clave_hash TEXT NOT NULL,
+    rol TEXT NOT NULL CHECK (rol IN ('paciente','profesional','admin')),
+    usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+    profesional_id INTEGER REFERENCES profesionales(id) ON DELETE CASCADE,
+    activa INTEGER NOT NULL DEFAULT 1,
+    debe_cambiar_clave INTEGER NOT NULL DEFAULT 0,
+    intentos_fallidos INTEGER NOT NULL DEFAULT 0,
+    bloqueada_hasta TEXT,
+    consentimiento_fecha TEXT,
+    politica_version TEXT,
+    creado TEXT NOT NULL,
+    ultimo_acceso TEXT
+);
+CREATE TABLE IF NOT EXISTS auditoria (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cuenta_id INTEGER,
+    accion TEXT NOT NULL,
+    detalle TEXT,
+    fecha TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS plan_registros (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     inscripcion_id INTEGER NOT NULL REFERENCES inscripciones(id) ON DELETE CASCADE,
@@ -191,15 +210,33 @@ CREATE TABLE IF NOT EXISTS plan_registros (
     creado TEXT NOT NULL
 );
 """
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# Columnas añadidas en la versión 3 (operación real con cuentas). Se agregan sin borrar datos existentes.
+COLUMNAS_V3 = {
+    "profesionales": [("registro_profesional", "TEXT"), ("estado", "TEXT NOT NULL DEFAULT 'aprobado'"), ("correo", "TEXT"), ("creado", "TEXT")],
+    "usuarios": [("compartir_registros", "INTEGER NOT NULL DEFAULT 1")],
+    "citas": [("enlace", "TEXT")],
+}
 
 
-def init_schema(con: sqlite3.Connection) -> None:
-    """Crea o migra el esquema. Todas las sentencias usan IF NOT EXISTS: una base creada con la versión 1
-    conserva sus datos y solo recibe las tablas nuevas de la versión 2."""
-    con.executescript(SCHEMA)
-    if con.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
-        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+def init_schema(con) -> None:
+    """Crea o migra el esquema. Todas las sentencias usan IF NOT EXISTS: una base de una versión anterior
+    conserva sus datos y solo recibe las tablas y columnas nuevas."""
+    script = SCHEMA if con.motor == "sqlite" else SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    con.executescript(script)
+    for tabla, cols in COLUMNAS_V3.items():
+        existentes = con.columnas(tabla)
+        for nombre, tipo in cols:
+            if nombre not in existentes:
+                con.execute(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}")
+    if con.motor == "postgres":
+        # Seguridad en Supabase: con RLS activo y sin políticas, la API pública (PostgREST) no puede leer estas tablas.
+        # La app se conecta como propietaria de las tablas, así que su acceso directo no cambia.
+        for (tabla,) in [tuple(r.values()) for r in con.execute("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")]:
+            con.execute(f'ALTER TABLE "{tabla}" ENABLE ROW LEVEL SECURITY')
+    if con.motor == "sqlite":
+        if con.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+            con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.commit()
 
 
@@ -249,7 +286,8 @@ def _fecha(v, campo, permitir_futuro=True):
 
 
 # ------------------------------------------------------------------ usuarios
-def crear_usuario(con, nombre, edad, sexo, ciudad=None, correo_demo=None, peso_kg=None, medicamento_declarado=None, es_demo=False, fecha_registro=None):
+def crear_usuario(con, nombre, edad, sexo, ciudad=None, correo_demo=None, peso_kg=None, medicamento_declarado=None, es_demo=False, fecha_registro=None,
+                  commit=True):
     nombre = _txt(nombre, "Nombre", maxlen=80)
     if len(nombre) < 2:
         raise ValidationError("El nombre debe tener al menos 2 caracteres.")
@@ -264,13 +302,17 @@ def crear_usuario(con, nombre, edad, sexo, ciudad=None, correo_demo=None, peso_k
     correo_demo = _txt(correo_demo, "Correo", obligatorio=False, maxlen=120)
     if correo_demo and ("@" not in correo_demo or "." not in correo_demo.split("@")[-1]):
         raise ValidationError("El correo no tiene un formato válido.")
-    with tx(con):
+    def insertar():
         cur = con.execute(
             "INSERT INTO usuarios (nombre, edad, sexo, ciudad, correo_demo, peso_kg, medicamento_declarado, fecha_registro, es_demo) VALUES (?,?,?,?,?,?,?,?,?)",
             (nombre, edad, sexo, _txt(ciudad, "Ciudad", False, 60), correo_demo, _peso(peso_kg), _txt(medicamento_declarado, "Medicamento", False, 80),
              fecha_registro or date.today().isoformat(), int(es_demo)))
-        uid = cur.lastrowid
-        crear_plan_base(con, uid, commit=False)
+        crear_plan_base(con, cur.lastrowid)
+        return cur.lastrowid
+    if not commit:
+        return insertar()
+    with tx(con):
+        uid = insertar()
     return uid
 
 
@@ -300,19 +342,60 @@ def listar_usuarios(con):
 
 
 # ------------------------------------------------------------------ profesionales
-def crear_profesional(con, nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias):
+def _validar_prof(nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias):
+    nombre = _txt(nombre, "Nombre", maxlen=80)
     if especialidad not in ESPECIALIDADES:
         raise ValidationError("Especialidad no válida.")
+    try:
+        exp = int(experiencia_anios)
+    except (TypeError, ValueError):
+        raise ValidationError("Los años de experiencia deben ser un número.")
+    if not 0 <= exp <= 60:
+        raise ValidationError("Los años de experiencia deben estar entre 0 y 60.")
+    if not modalidades or any(m not in MODALIDADES for m in modalidades):
+        raise ValidationError("Elija al menos una modalidad de atención.")
+    if not dias or any(d not in DIAS for d in dias):
+        raise ValidationError("Elija al menos un día de atención.")
+    return (nombre, especialidad, exp, _txt(perfil, "Perfil profesional", True, 400), _txt(ciudad, "Ciudad", True, 60),
+            ",".join(modalidades), ",".join(d for d in DIAS if d in dias))
+
+
+def crear_profesional(con, nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias, registro_profesional=None,
+                      correo=None, estado="aprobado", commit=True):
+    vals = _validar_prof(nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias)
+    if estado not in ESTADOS_PROF:
+        raise ValidationError("Estado no válido.")
+    sql = ("INSERT INTO profesionales (nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias, registro_profesional, correo, estado, creado) "
+           "VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+    args = (*vals, _txt(registro_profesional, "Registro profesional", False, 40), correo, estado, now())
+    if not commit:
+        return con.execute(sql, args).lastrowid
     with tx(con):
-        cur = con.execute("INSERT INTO profesionales (nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias) VALUES (?,?,?,?,?,?,?)",
-                          (nombre, especialidad, int(experiencia_anios), perfil, ciudad, ",".join(modalidades), ",".join(dias)))
+        cur = con.execute(sql, args)
     return cur.lastrowid
 
 
-def listar_profesionales(con, especialidad=None):
+def actualizar_profesional(con, pid, nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias):
+    vals = _validar_prof(nombre, especialidad, experiencia_anios, perfil, ciudad, modalidades, dias)
+    with tx(con):
+        con.execute("UPDATE profesionales SET nombre=?, especialidad=?, experiencia_anios=?, perfil=?, ciudad=?, modalidades=?, dias=? WHERE id=?", (*vals, pid))
+
+
+def cambiar_estado_profesional(con, pid, estado):
+    if estado not in ESTADOS_PROF:
+        raise ValidationError("Estado no válido.")
+    with tx(con):
+        con.execute("UPDATE profesionales SET estado=?, verificado=? WHERE id=?", (estado, int(estado == "aprobado"), pid))
+
+
+def listar_profesionales(con, especialidad=None, estado="aprobado"):
+    """Por defecto solo devuelve profesionales aprobados por el administrador (los que aparecen en el directorio)."""
+    q, args = "SELECT * FROM profesionales WHERE 1=1", []
+    if estado:
+        q += " AND estado=?"; args.append(estado)
     if especialidad and especialidad != "Todas":
-        return rows(con.execute("SELECT * FROM profesionales WHERE especialidad=? ORDER BY nombre", (especialidad,)))
-    return rows(con.execute("SELECT * FROM profesionales ORDER BY especialidad, nombre"))
+        q += " AND especialidad=?"; args.append(especialidad)
+    return rows(con.execute(q + " ORDER BY especialidad, nombre", args))
 
 
 def obtener_profesional(con, pid):
@@ -330,11 +413,12 @@ def horarios_disponibles(con, pid, fecha, usuario_id=None, excluir_cita=None):
     f = date.fromisoformat(_fecha(fecha, "Fecha"))
     if not prof or not atiende_ese_dia(prof, f) or f < date.today():
         return []
-    ocupados = {r["hora"] for r in con.execute("SELECT hora FROM citas WHERE profesional_id=? AND fecha=? AND estado='programada' AND id IS NOT ?",
-                                                (pid, f.isoformat(), excluir_cita))}
+    excl = excluir_cita or -1
+    ocupados = {r["hora"] for r in con.execute("SELECT hora FROM citas WHERE profesional_id=? AND fecha=? AND estado='programada' AND id<>?",
+                                                (pid, f.isoformat(), excl))}
     if usuario_id:
-        ocupados |= {r["hora"] for r in con.execute("SELECT hora FROM citas WHERE usuario_id=? AND fecha=? AND estado='programada' AND id IS NOT ?",
-                                                     (usuario_id, f.isoformat(), excluir_cita))}
+        ocupados |= {r["hora"] for r in con.execute("SELECT hora FROM citas WHERE usuario_id=? AND fecha=? AND estado='programada' AND id<>?",
+                                                     (usuario_id, f.isoformat(), excl))}
     libres = [h for h in HORARIOS if h not in ocupados]
     if f == date.today():
         libres = [h for h in libres if h > datetime.now().strftime("%H:%M")]
@@ -344,7 +428,7 @@ def horarios_disponibles(con, pid, fecha, usuario_id=None, excluir_cita=None):
 # ------------------------------------------------------------------ citas
 def _validar_cita(con, usuario_id, pid, fecha, hora, modalidad, excluir=None):
     prof = obtener_profesional(con, pid)
-    if not prof:
+    if not prof or prof.get("estado", "aprobado") != "aprobado":
         raise ValidationError("Seleccione un profesional válido.")
     if not obtener_usuario(con, usuario_id):
         raise ValidationError("Usuario no encontrado.")
@@ -366,7 +450,7 @@ def crear_cita(con, usuario_id, pid, fecha, hora, modalidad, motivo=None):
         with tx(con):
             cur = con.execute("INSERT INTO citas (usuario_id, profesional_id, fecha, hora, modalidad, motivo, estado, creado, actualizado) VALUES (?,?,?,?,?,?,'programada',?,?)",
                               (usuario_id, pid, f, hora, modalidad, _txt(motivo, "Motivo", False, 300), now(), now()))
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         raise ValidationError("Ya existe una cita en ese horario (reserva duplicada).")
     return cur.lastrowid
 
@@ -386,7 +470,7 @@ def reprogramar_cita(con, cid, nueva_fecha, nueva_hora, modalidad=None):
         with tx(con):
             con.execute("UPDATE citas SET fecha=?, hora=?, modalidad=?, veces_reprogramada=veces_reprogramada+1, actualizado=? WHERE id=?",
                         (f, nueva_hora, modalidad, now(), cid))
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         raise ValidationError("Ese horario ya fue reservado.")
 
 
@@ -398,17 +482,79 @@ def cancelar_cita(con, cid):
         con.execute("UPDATE citas SET estado='cancelada', actualizado=? WHERE id=?", (now(), cid))
 
 
-def listar_citas(con, usuario_id=None, solo_futuras=False, estado=None):
-    q = ("SELECT c.*, p.nombre AS profesional, p.especialidad FROM citas c JOIN profesionales p ON p.id=c.profesional_id WHERE 1=1")
+def listar_citas(con, usuario_id=None, solo_futuras=False, estado=None, profesional_id=None):
+    q = ("SELECT c.*, p.nombre AS profesional, p.especialidad, u.nombre AS paciente FROM citas c JOIN profesionales p ON p.id=c.profesional_id "
+         "JOIN usuarios u ON u.id=c.usuario_id WHERE 1=1")
     args = []
     if usuario_id:
         q += " AND c.usuario_id=?"; args.append(usuario_id)
+    if profesional_id:
+        q += " AND c.profesional_id=?"; args.append(profesional_id)
     if estado:
         q += " AND c.estado=?"; args.append(estado)
     if solo_futuras:
         q += " AND c.fecha>=?"; args.append(date.today().isoformat())
     q += " ORDER BY c.fecha, c.hora"
     return rows(con.execute(q, args))
+
+
+def completar_cita(con, cid, profesional_id):
+    c = obtener_cita(con, cid)
+    if not c or c["profesional_id"] != profesional_id:
+        raise ValidationError("Cita no encontrada.")
+    if c["estado"] != "programada":
+        raise ValidationError("Solo se pueden marcar como atendidas las citas programadas.")
+    with tx(con):
+        con.execute("UPDATE citas SET estado='completada', actualizado=? WHERE id=?", (now(), cid))
+
+
+def guardar_enlace(con, cid, profesional_id, enlace):
+    c = obtener_cita(con, cid)
+    if not c or c["profesional_id"] != profesional_id:
+        raise ValidationError("Cita no encontrada.")
+    enlace = _txt(enlace, "Enlace", False, 300)
+    if enlace and not enlace.startswith("https://"):
+        raise ValidationError("El enlace de la consulta virtual debe empezar por https://")
+    with tx(con):
+        con.execute("UPDATE citas SET enlace=?, actualizado=? WHERE id=?", (enlace, now(), cid))
+
+
+def pacientes_de_profesional(con, pid):
+    """Pacientes que tienen o tuvieron al menos una cita con el profesional."""
+    return rows(con.execute(
+        "SELECT u.id, u.nombre, u.edad, u.sexo, u.ciudad, u.medicamento_declarado, u.compartir_registros, "
+        "COUNT(c.id) AS citas, MAX(c.fecha) AS ultima_cita FROM citas c JOIN usuarios u ON u.id=c.usuario_id "
+        "WHERE c.profesional_id=? GROUP BY u.id, u.nombre, u.edad, u.sexo, u.ciudad, u.medicamento_declarado, u.compartir_registros ORDER BY u.nombre", (pid,)))
+
+
+def profesional_atiende_a(con, pid, uid) -> bool:
+    return con.execute("SELECT 1 FROM citas WHERE profesional_id=? AND usuario_id=?", (pid, uid)).fetchone() is not None
+
+
+def eliminar_usuario(con, uid):
+    """Derecho de supresión: borra al usuario y, en cascada, sus citas, planes, seguimientos y reportes."""
+    with tx(con):
+        con.execute("DELETE FROM usuarios WHERE id=?", (uid,))
+
+
+def exportar_datos(con, uid) -> str:
+    """Todos los datos del usuario en JSON (derecho de acceso, Ley 1581 de 2012)."""
+    datos = {
+        "perfil": obtener_usuario(con, uid),
+        "citas": listar_citas(con, uid),
+        "seguimientos": listar_seguimientos(con, uid),
+        "reportes_eventos": listar_reportes(con, uid),
+        "programas": rows(con.execute("SELECT * FROM inscripciones WHERE usuario_id=?", (uid,))),
+        "actividades": rows(con.execute("SELECT a.* FROM plan_actividades a JOIN inscripciones i ON i.id=a.inscripcion_id WHERE i.usuario_id=?", (uid,))),
+        "registros": rows(con.execute("SELECT r.* FROM plan_registros r JOIN inscripciones i ON i.id=r.inscripcion_id WHERE i.usuario_id=?", (uid,))),
+        "exportado": now(),
+    }
+    return json.dumps(datos, ensure_ascii=False, indent=2, default=str)
+
+
+def actualizar_compartir(con, uid, compartir: bool):
+    with tx(con):
+        con.execute("UPDATE usuarios SET compartir_registros=? WHERE id=?", (int(bool(compartir)), uid))
 
 
 # ------------------------------------------------------------------ plan de acompañamiento (ejemplos educativos)
@@ -428,8 +574,6 @@ PLAN_BASE = [
 def crear_plan_base(con, uid, commit=True):
     con.executemany("INSERT INTO plan_items (usuario_id, categoria, titulo, descripcion, semana) VALUES (?,?,?,?,?)",
                     [(uid, c, t, d, s) for c, t, d, s in PLAN_BASE])
-    if commit:
-        con.commit()
 
 
 def listar_plan(con, uid):
@@ -621,6 +765,7 @@ def indicadores(con, uid=None):
 
 
 def reset_db(path: str | Path | None = None):
+    """Solo para pruebas locales con SQLite."""
     p = Path(path) if path else DEFAULT_DB
     if p.exists():
         p.unlink()

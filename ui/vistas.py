@@ -1,4 +1,4 @@
-"""Vistas: Inicio, Citas, Seguimiento, Perfil, Más, Profesionales, Eventos adversos, Panel y Acerca."""
+"""Vistas del paciente: Inicio, Citas, Seguimiento, Perfil, Más, Profesionales, Eventos adversos y Acerca."""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -10,6 +10,7 @@ import streamlit as st
 
 from core import db, planes
 from core.programas import MEDICAMENTOS_DECLARABLES, PROGRAMAS, ruta_sugerida
+from core import auth
 from ui import nav
 from ui.estilo import (FULL, FULL_CHART, CAT_ICON, DARK, LIME, MID, SAGE, bar, card, e, fecha_corta, fecha_larga, iniciales, num, ring, week_strip)
 
@@ -141,7 +142,7 @@ def _cancelar(con, cid):
 
 def citas(con, user):
     uid = user["id"]
-    titulo("Citas", "Agende, reprograme o cancele sus citas de demostración")
+    titulo("Citas", "Agende, reprograme o cancele sus citas")
     vista = st.radio("Vista", ["agendar", "mis"], key="citas_tab", horizontal=True, label_visibility="collapsed",
                      format_func=lambda v: {"agendar": "Agendar", "mis": "Mis citas"}[v])
     if vista == "agendar":
@@ -149,6 +150,10 @@ def citas(con, user):
             st.session_state["cita_esp"] = db.ESPECIALIDADES[0]
         esp = st.radio("Especialidad", db.ESPECIALIDADES, key="cita_esp", horizontal=True)
         profs = db.listar_profesionales(con, esp)
+        if not profs:
+            card('<p class="tr-title">Aún no hay profesionales disponibles en esta especialidad</p>'
+                 '<p class="tr-sub">Estamos verificando nuevos profesionales. Pruebe con otra especialidad o vuelva pronto.</p>', "cream")
+            return
         ids = [p["id"] for p in profs]
         pre = st.session_state.get("prof_sel")
         pid = st.selectbox("Profesional", ids, index=ids.index(pre) if pre in ids else 0, key="cita_prof",
@@ -192,6 +197,8 @@ def citas(con, user):
                         f'<div class="tr-grow"><p class="tr-title">{e(c["hora"])} · {e(c["profesional"])}</p><p class="tr-sub">{e(c["especialidad"])} · {e(c["modalidad"])}'
                         f'{" · reprogramada " + str(c["veces_reprogramada"]) + " vez/veces" if c["veces_reprogramada"] else ""}</p>'
                         f'<p class="tr-sub">{e(c["motivo"] or "Sin motivo")}</p></div></div>', unsafe_allow_html=True)
+            if c.get("enlace"):
+                st.markdown(f'<a href="{e(c["enlace"])}" target="_blank" rel="noopener" style="font-weight:700">🎥 Entrar a la consulta virtual</a>', unsafe_allow_html=True)
             prof = db.obtener_profesional(con, c["profesional_id"])
             with st.expander("Reprogramar o cancelar"):
                 nf = st.date_input("Nueva fecha", value=d, min_value=date.today(), key=f"rf_{c['id']}", format="DD/MM/YYYY")
@@ -282,12 +289,13 @@ def seguimiento(con, user):
 
 
 # ------------------------------------------------------------------ PERFIL
-def perfil(con, user, usuarios):
+def perfil(con, user, cuenta):
+    from ui import acceso, legal
     uid = user["id"]
     med = user["medicamento_declarado"] or "No declarado"
     st.markdown(f'<div class="tr-card lime"><div class="tr-row"><div class="tr-avatar" style="width:64px;height:64px;font-size:1.4rem">{e(iniciales(user["nombre"]))}</div>'
                 f'<div class="tr-grow"><h2 style="margin:0">{e(user["nombre"])}</h2><p class="tr-sub">{user["edad"]} años · {e(user["sexo"])} · {e(user["ciudad"] or "Ciudad no indicada")}</p>'
-                f'<span class="tr-chip dark">💊 {e(med)}</span></div></div></div>', unsafe_allow_html=True)
+                f'<p class="tr-sub">{e(cuenta["correo"])}</p><span class="tr-chip dark">💊 {e(med)}</span></div></div></div>', unsafe_allow_html=True)
     ind = db.indicadores(con, uid)
     n_planes = len(planes.listar(con, uid))
     st.markdown(f'<div class="tr-grid2"><div class="tr-stat"><div class="v">{n_planes}</div><div class="l">planes activos o en pausa</div></div>'
@@ -295,9 +303,9 @@ def perfil(con, user, usuarios):
                 f'<div class="tr-stat"><div class="v">{ind["seguimientos"]}</div><div class="l">registros de seguimiento</div></div>'
                 f'<div class="tr-stat"><div class="v">{ind["reportes"]}</div><div class="l">reportes de eventos</div></div></div>', unsafe_allow_html=True)
     st.write("")
-    with st.expander("Editar mi perfil", expanded=False):
+    with st.expander("Editar mis datos", expanded=False):
         with st.form("form_perfil"):
-            nombre = st.text_input("Nombre o alias *", value=user["nombre"])
+            nombre = st.text_input("Nombre *", value=user["nombre"])
             edad = st.number_input("Edad *", min_value=0, max_value=120, value=int(user["edad"]))
             sexo = st.selectbox("Sexo *", db.SEXOS, index=db.SEXOS.index(user["sexo"]))
             ciudad = st.text_input("Ciudad", value=user["ciudad"] or "")
@@ -310,83 +318,76 @@ def perfil(con, user, usuarios):
                 valor = None if medsel == "No declaro" else (otro.strip() or None if medsel == "Otro" else medsel)
                 try:
                     db.actualizar_usuario(con, uid, nombre=nombre, edad=edad, sexo=sexo, ciudad=ciudad, peso_kg=peso or None, medicamento_declarado=valor)
-                    nav.flash("Perfil actualizado."); st.rerun()
+                    nav.flash("Datos actualizados."); st.rerun()
                 except db.ValidationError as ex:
                     st.error(str(ex))
-    st.markdown("<h3>Usuario de demostración</h3>", unsafe_allow_html=True)
-    ids = [u["id"] for u in usuarios]
-    # «uid» no es clave de widget: así el usuario activo se conserva al cambiar de sección
-    st.selectbox("Usuario activo", ids, index=ids.index(uid) if uid in ids else 0, key="uid_sel",
-                 format_func=lambda i: next(u["nombre"] for u in usuarios if u["id"] == i), on_change=_cambiar_usuario)
-    with st.expander("Crear otro usuario de demostración"):
-        st.caption("Campos con * son obligatorios. Peso y medicamento son opcionales.")
-        with st.form("form_registro", clear_on_submit=True):
-            nombre = st.text_input("Nombre o alias *", placeholder="Ej.: Usuario Prueba", key="reg_nombre")
-            edad = st.number_input("Edad *", min_value=0, max_value=120, value=35, step=1, key="reg_edad")
-            sexo = st.selectbox("Sexo *", db.SEXOS)
-            correo = st.text_input("Correo (ficticio, opcional)", placeholder="usuario@ejemplo.com")
-            ciudad = st.text_input("Ciudad (opcional)")
-            peso = st.number_input("Peso en kg (opcional)", min_value=0.0, max_value=300.0, value=None, step=0.5, placeholder="Opcional")
-            med = st.selectbox("Medicamento declarado (opcional)", MEDICAMENTOS_DECLARABLES)
-            acepto = st.checkbox("Entiendo que es un prototipo académico y que no debo ingresar datos médicos reales *", key="reg_acepto")
-            if st.form_submit_button("Crear usuario", type="primary", **FULL):
-                if not acepto:
-                    st.error("Debe aceptar la condición de prototipo académico.")
+    with st.expander("Privacidad y mis datos"):
+        compartir = st.toggle("Compartir mis registros de seguimiento y eventos con los profesionales con los que agendo citas",
+                              value=bool(user.get("compartir_registros", 1)), key="tg_compartir")
+        if compartir != bool(user.get("compartir_registros", 1)):
+            db.actualizar_compartir(con, uid, compartir)
+            auth.auditar(con, cuenta["id"], "compartir_registros", "activado" if compartir else "desactivado")
+            nav.flash("Preferencia de privacidad guardada."); st.rerun()
+        st.download_button("Descargar todos mis datos (JSON)", db.exportar_datos(con, uid), file_name="mis_datos_the_reset.json",
+                           mime="application/json", key="dl_datos", **FULL)
+        st.markdown("**Eliminar mi cuenta**")
+        st.caption("Se borran de forma definitiva su cuenta, citas, planes, registros y reportes. No se puede deshacer.")
+        with st.form("form_eliminar"):
+            conf = st.text_input("Escriba ELIMINAR para confirmar")
+            clave = st.text_input("Su contraseña", type="password")
+            if st.form_submit_button("Eliminar mi cuenta definitivamente", **FULL):
+                if conf.strip().upper() != "ELIMINAR":
+                    st.error("Escriba ELIMINAR para confirmar.")
                 else:
                     try:
-                        nuevo = db.crear_usuario(con, nombre, edad, sexo, ciudad, correo or None, peso or None, None if med == "No declaro" else med)
-                        st.session_state["_pending_uid"] = nuevo
-                        nav.flash(f"Usuario «{nombre}» creado y activado.")
-                        nav.ir("inicio"); st.rerun()
+                        auth.eliminar_cuenta_paciente(con, cuenta["id"], clave)
+                        acceso.salir(); nav.flash("Su cuenta y sus datos fueron eliminados.", "info"); st.rerun()
                     except db.ValidationError as ex:
                         st.error(str(ex))
-
-
-def _cambiar_usuario():
-    st.session_state["uid"] = st.session_state["uid_sel"]
-    st.session_state["planes_vista"] = "lista"
+    with st.expander("Cambiar contraseña"):
+        acceso.form_cambiar_clave(con, cuenta, "pac_cc")
+    st.button("Cerrar sesión", key="pac_salir", on_click=acceso.salir, icon=":material/logout:", **FULL)
 
 
 # ------------------------------------------------------------------ MÁS
 def mas(con, user):
     titulo("Más opciones")
-    items = [("profesionales", "Directorio de profesionales", "8 perfiles ficticios en 4 especialidades", ":material/groups:"),
+    items = [("profesionales", "Directorio de profesionales", "Profesionales verificados por The Reset", ":material/groups:"),
              ("eventos", "Eventos adversos", "Documente síntomas con datos completos y su evolución", ":material/edit_note:"),
-             ("panel", "Panel de análisis", "Indicadores de la app y datos históricos separados", ":material/insights:"),
-             ("acerca", "Acerca del prototipo", "Alcance, límites y datos ficticios", ":material/info:")]
+             ("acerca", "Acerca de The Reset", "Qué hace la plataforma, política de datos y términos", ":material/info:")]
     for k, t, d, ic in items:
         with st.container(border=True, key=f"row_mas_{k}"):
             c1, c2 = st.columns([3, 1.5])
             c1.markdown(f'<p class="tr-title">{e(t)}</p><p class="tr-sub">{e(d)}</p>', unsafe_allow_html=True)
             c2.button("Abrir", key=f"mas_{k}", on_click=nav.ir, args=(k,), type="primary", **FULL)
-    with st.expander("Restablecer la demostración"):
-        st.caption("Borra todos los registros y vuelve a cargar los datos ficticios de ejemplo.")
-        if st.button("Restablecer datos", key="btn_reset"):
-            st.session_state["_reset"] = True; st.rerun()
 
 
 def acerca(con, user):
-    titulo("Acerca del prototipo")
-    card('<p>The Reset es un <b>prototipo académico</b> del Proyecto Integrador de TIC. Conecta, de forma simulada, a personas adultas que usan o consideran '
-         'medicamentos GLP-1 <b>bajo supervisión médica</b> con profesionales verificados, y organiza citas, planes de acompañamiento y seguimiento.</p>'
+    from ui import legal
+    titulo("Acerca de The Reset")
+    card('<p>The Reset acompaña a personas adultas que usan o consideran medicamentos GLP-1 <b>bajo supervisión médica</b>: organiza su plan, '
+         'sus citas con profesionales verificados y el registro de su evolución.</p>'
          '<ul style="margin:0 0 0 1rem;padding:0"><li>No prescribe medicamentos, dosis, frecuencias, dietas ni rutinas.</li>'
          '<li>No diagnostica ni sustituye a los profesionales de salud.</li>'
-         '<li>Registrar un evento en la app no es una notificación oficial de farmacovigilancia.</li>'
-         '<li>Usuarios y profesionales son ficticios; los datos se guardan en una base SQLite local.</li></ul>')
-    card('<span class="tr-label">Relación con el problema central</span><p style="margin:.3rem 0 0">En los 54.170 reportes históricos analizados, el 90,46 % no tenía '
-         'edad, peso, sexo y desenlace a la vez. El formulario estructurado de eventos adversos y los registros de los planes buscan que esos datos sí queden documentados.</p>', "cream")
+         '<li>Registrar un evento en la app no es una notificación oficial de farmacovigilancia: repórtelo también a su profesional o al INVIMA.</li>'
+         '<li>Ante una emergencia llame al <b>123</b>.</li></ul>')
+    card('<span class="tr-label">Por qué existe</span><p style="margin:.3rem 0 0">En 54.170 reportes históricos de eventos adversos de estos medicamentos, '
+         'el 90,46 % no tenía edad, peso, sexo y desenlace a la vez. The Reset le ayuda a registrar esos datos para que su seguimiento sea completo.</p>', "cream")
+    legal.enlaces()
 
 
 # ------------------------------------------------------------------ PROFESIONALES
 def profesionales(con, user):
-    titulo("Profesionales", "Perfiles ficticios de demostración")
+    titulo("Profesionales", "Verificados por The Reset antes de aparecer en el directorio")
     esp = st.radio("Especialidad", ["Todas"] + db.ESPECIALIDADES, key="dir_esp", horizontal=True)
     profs = db.listar_profesionales(con, esp)
+    if not profs:
+        st.info("Aún no hay profesionales en esta especialidad.")
     for p in profs:
         with st.container(border=True, key=f"row_profcard_{p['id']}"):
             st.markdown(f'<div class="tr-row"><div class="tr-avatar">{e(iniciales(p["nombre"].replace("Dra. ", "").replace("Dr. ", "").replace("Nut. ", "")))}</div>'
                         f'<div class="tr-grow"><p class="tr-title">{e(p["nombre"])}</p><p class="tr-sub">{e(p["especialidad"])} · {p["experiencia_anios"]} años · {e(p["ciudad"])}</p>'
-                        f'<span class="tr-chip ok">✓ Verificado (simulado)</span><span class="tr-chip warn">Demo</span></div></div>'
+                        f'<span class="tr-chip ok">✓ Verificado</span></div></div>'
                         f'<p class="tr-sub" style="margin:.5rem 0">{e(p["perfil"])}</p>'
                         f'<p class="tr-sub">Atiende: {e(p["dias"].replace(",", ", "))} · {e(p["modalidades"].replace(",", " / "))}</p>', unsafe_allow_html=True)
             st.button("Agendar con este profesional", key=f"sel_{p['id']}", on_click=nav.ir, args=("citas",),
@@ -479,34 +480,10 @@ def eventos(con, user):
                     db.eliminar_reporte(con, r["id"]); nav.flash("Borrador eliminado.", "info"); st.rerun()
 
 
-# ------------------------------------------------------------------ PANEL
-def panel(con, user):
-    titulo("Panel de análisis")
-    vista = st.radio("Vista", ["app", "hist"], key="panel_tab", horizontal=True, label_visibility="collapsed",
-                     format_func=lambda v: {"app": "Datos de la app", "hist": "Datos históricos"}[v])
-    if vista == "app":
-        st.caption("Indicadores sobre los registros ficticios de esta demostración (todos los usuarios).")
-        ind = db.indicadores(con)
-        n_insc = con.execute("SELECT COUNT(*) FROM inscripciones WHERE estado IN ('activo','pausado')").fetchone()[0]
-        st.markdown(f'<div class="tr-grid2"><div class="tr-stat"><div class="v">{num(ind["pct_4_minimos"])} %</div><div class="l">reportes con los 4 datos mínimos</div></div>'
-                    f'<div class="tr-stat"><div class="v">{ind["reportes"]}</div><div class="l">reportes · {ind["borradores"]} borradores</div></div>'
-                    f'<div class="tr-stat"><div class="v">{ind["citas_programadas"]}</div><div class="l">citas programadas · {ind["citas_canceladas"]} canceladas</div></div>'
-                    f'<div class="tr-stat"><div class="v">{n_insc}</div><div class="l">planes activos o en pausa</div></div></div>', unsafe_allow_html=True)
-        comp = pd.DataFrame({"Campo": ["Edad", "Sexo", "Peso", "Desenlace conocido"], "%": [ind["pct_con_edad"], ind["pct_con_sexo"], ind["pct_con_peso"], ind["pct_con_desenlace"]]})
-        fig = px.bar(comp, x="%", y="Campo", orientation="h", title="Completitud de los reportes de la app", range_x=[0, 100], text="%", color_discrete_sequence=[MID])
-        fig.update_traces(texttemplate="%{text:.1f} %")
-        chart(fig, 240)
-        insc = pd.read_sql_query("SELECT programa_id, estado FROM inscripciones", con)
-        if len(insc):
-            insc["Programa"] = insc.programa_id.map(lambda x: PROGRAMAS[x]["corto"])
-            agg = insc.groupby(["Programa", "estado"]).size().reset_index(name="Inscripciones").rename(columns={"estado": "Estado"})
-            fig = px.bar(agg, y="Programa", x="Inscripciones", color="Estado", orientation="h", title="Inscripciones por programa",
-                         color_discrete_map={"activo": DARK, "pausado": SAND, "finalizado": SAGE}, labels={"Programa": ""})
-            fig.update_xaxes(dtick=1)
-            chart(fig, 260)
-        return
+# ------------------------------------------------------------------ DATOS HISTÓRICOS (vista del administrador)
+def panel_historico():
     st.markdown('<div class="tr-banner"><b>Datos históricos, no usuarios de la app.</b> Resumen agregado de 54.170 reportes de eventos adversos de incretinas '
-                '(base limpia del proyecto; 97,8 % de EE. UU.). No representan incidencia, riesgo ni causalidad y no se mezclan con la demostración.</div>', unsafe_allow_html=True)
+                '(base limpia del proyecto; 97,8 % de EE. UU.). No representan incidencia, riesgo ni causalidad y no se mezclan con los datos de la app.</div>', unsafe_allow_html=True)
     if not HIST_CSV.exists():
         st.warning("No se encontró data/historico_resumen.csv."); return
     h = pd.read_csv(HIST_CSV)

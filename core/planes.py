@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import date, timedelta
 
 from . import db
@@ -49,7 +48,7 @@ def inscribir(con, usuario_id: int, programa_id: str, fecha_inicio=None, objetiv
                                VALUES (?,?,?,?,?,?,?,?,?)""",
                             [(iid, i, s, d, (f + timedelta(days=(s - 1) * 7 + d - 1)).isoformat(), cat, t, desc, acc)
                              for i, (s, d, cat, t, desc, acc) in enumerate(programa(programa_id)["actividades"])])
-    except sqlite3.IntegrityError:
+    except db.IntegrityError:
         raise db.ValidationError("Ya tiene este programa activo o en pausa.")
     return iid
 
@@ -101,7 +100,9 @@ def reanudar(con, iid):
     dias = max(0, (_hoy() - date.fromisoformat(i["fecha_pausa"])).days)
     with db.tx(con):
         if dias:
-            con.execute("UPDATE plan_actividades SET fecha = date(fecha, ?) WHERE inscripcion_id=? AND completada=0", (f"+{dias} days", iid))
+            pend = con.execute("SELECT id, fecha FROM plan_actividades WHERE inscripcion_id=? AND completada=0", (iid,)).fetchall()
+            con.executemany("UPDATE plan_actividades SET fecha=? WHERE id=?",
+                            [((date.fromisoformat(r["fecha"]) + timedelta(days=dias)).isoformat(), r["id"]) for r in pend])
         con.execute("UPDATE inscripciones SET estado='activo', fecha_pausa=NULL, dias_pausa=dias_pausa+?, actualizado=? WHERE id=?", (dias, db.now(), iid))
     return dias
 
